@@ -1,0 +1,6 @@
+{
+  "name": "بوابة نتائج طلاب مدارس WE",
+  "description": "البوابة الرسمية للاستعلام عن نتائج طلاب الصف الأول والثاني بمدارس WE المشتركة للتكنولوجيا التطبيقية، بالربط المباشر مع جداول بيانات Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
