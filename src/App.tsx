@@ -56,22 +56,37 @@ export default function App() {
   }, []);
 
   const fetchConfig = async () => {
+    // 1. Try to fetch from server-side first
     try {
       const response = await fetch("/api/config");
       if (response.ok) {
         const data = await response.json();
         setSheetUrl(data.sheetUrl || "");
         setWebAppUrl(data.webAppUrl || "");
+        if (data.sheetUrl) localStorage.setItem("sheetUrl", data.sheetUrl);
+        if (data.webAppUrl) localStorage.setItem("webAppUrl", data.webAppUrl);
+        return;
       }
     } catch (err) {
-      console.error("Error loading configuration:", err);
+      console.log("Using local storage fallback for configurations:", err);
     }
+
+    // 2. Fallback to localStorage if server configuration is unavailable (e.g. on Netlify)
+    const localSheet = localStorage.getItem("sheetUrl");
+    const localWebApp = localStorage.getItem("webAppUrl");
+    if (localSheet) setSheetUrl(localSheet);
+    if (localWebApp) setWebAppUrl(localWebApp);
   };
 
   const saveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setConfigSaving(true);
     setConfigStatus(null);
+
+    // Save to local storage immediately
+    localStorage.setItem("sheetUrl", sheetUrl);
+    localStorage.setItem("webAppUrl", webAppUrl);
+
     try {
       const response = await fetch("/api/config", {
         method: "POST",
@@ -82,10 +97,19 @@ export default function App() {
         setConfigStatus({ type: "success", text: "تم حفظ إعدادات الربط بنجاح لملف Google Sheet!" });
         setTimeout(() => setConfigStatus(null), 4000);
       } else {
-        setConfigStatus({ type: "error", text: "فشل حفظ الإعدادات على الخادم." });
+        // If server failed but we saved locally, report offline success
+        setConfigStatus({ 
+          type: "success", 
+          text: "تم حفظ الإعدادات بنجاح محلياً في متصفحك (متوافق مع العمل على استضافة Netlify السحابية)!" 
+        });
+        setTimeout(() => setConfigStatus(null), 4000);
       }
     } catch (err) {
-      setConfigStatus({ type: "error", text: "حدث خطأ غير متوقع أثناء الحفظ." });
+      setConfigStatus({ 
+        type: "success", 
+        text: "تم حفظ الإعدادات بنجاح محلياً في متصفحك (متوافق مع العمل على استضافة Netlify السحابية)!" 
+      });
+      setTimeout(() => setConfigStatus(null), 4000);
     } finally {
       setConfigSaving(false);
     }
@@ -110,20 +134,84 @@ export default function App() {
     setIsMockResult(false);
 
     try {
-      const response = await fetch(`/api/search?grade=${selectedGrade}&nationalId=${encodeURIComponent(cleanId)}`);
-      const resData = await response.json();
+      let resData: any = null;
+      let ok = false;
 
-      if (response.ok && resData.status === "success") {
+      // 1. First, attempt to invoke via Express backend helper
+      try {
+        const response = await fetch(`/api/search?grade=${selectedGrade}&nationalId=${encodeURIComponent(cleanId)}`);
+        ok = response.ok;
+        resData = await response.json();
+      } catch (backendErr) {
+        console.log("Backend API not reachable. Attempting direct browser connection to Apps Script...", backendErr);
+      }
+
+      // 2. If backend failed, or returned an error indicating endpoint is unconfigured or failed, we run a direct client-side script fetch!
+      if (!ok || !resData || resData.status === "error") {
+        if (webAppUrl) {
+          // Double check the webAppUrl is valid
+          if (webAppUrl.includes("docs.google.com/spreadsheets")) {
+            setErrorMessage("عذراً، لقد قمت بلصق رابط ملف الـ Google Sheets في خانة الرابط. يرجى تعديل الإعدادات ووضع رابط الـ Web App المنتهي بـ '/exec'.");
+            setSearchLoading(false);
+            return;
+          }
+          if (webAppUrl.trim().endsWith("/dev") || webAppUrl.includes("/dev?")) {
+            setErrorMessage("خطأ: رابط الـ Apps Script ينتهي بـ '/dev'. يرجى رصد رابط النشر الرسمي المنتهي بـ '/exec' لكي يشتغل للجميع دون طلب تسجيل الدخول.");
+            setSearchLoading(false);
+            return;
+          }
+
+          const targetUrl = `${webAppUrl}?grade=${encodeURIComponent(selectedGrade)}&nationalId=${encodeURIComponent(cleanId)}`;
+          const directResponse = await fetch(targetUrl);
+
+          if (directResponse.ok) {
+            const textResponse = await directResponse.text();
+            let parsedJson: any;
+            try {
+              parsedJson = JSON.parse(textResponse);
+            } catch (jsErr) {
+              // Sign-in page detection
+              if (textResponse.includes("Sign in") || textResponse.includes("login") || textResponse.includes("<!DOCTYPE")) {
+                setErrorMessage("خطأ في الصلاحيات: يبدو أن رابط الـ Web App يتطلب تسجيل الدخول. تأكد من ضبط Who has access على Anyone (الجميع) في إعدادات النشر على Apps Script.");
+                setSearchLoading(false);
+                return;
+              }
+              throw new Error("Invalid JSON returned from Google Sheets script.");
+            }
+
+            if (parsedJson && parsedJson.status === "success") {
+              setResult(parsedJson.data);
+              setIsMockResult(!!parsedJson.isMock);
+              if (parsedJson.warning) {
+                setWarningMessage(parsedJson.warning);
+              }
+            } else if (parsedJson && parsedJson.status === "not_found") {
+              setErrorMessage("لم يتم العثور على طالب مطابق للرقم القومي المدخل في الصف المختار. تأكد من صحة الرقم.");
+            } else {
+              setErrorMessage(parsedJson.message || "حدث خطأ غير معروف في تطبيق الويب الخاص بجدول البيانات.");
+            }
+          } else {
+            throw new Error(`Google Sheet App response error: ${directResponse.status}`);
+          }
+        } else {
+          // No webAppUrl configured and backend failed
+          if (resData && resData.message) {
+            setErrorMessage(resData.message);
+          } else {
+            setErrorMessage("تعذر الاتصال بخادم البوابة أو أن رابط الـ Apps Script غير مهيأ بعد. يرجى الضغط على زر 'ربط Google Sheet' بالأعلى وإقران الصفحة بملفك البرمجي.");
+          }
+        }
+      } else {
+        // Backend successfully returned student info
         setResult(resData.data);
         setIsMockResult(!!resData.isMock);
         if (resData.warning) {
           setWarningMessage(resData.warning);
         }
-      } else {
-        setErrorMessage(resData.message || "عذراً، لم نتمكن من العثور على النتيجة المطلوبة. تأكد من صحة الصف الدراسي والرقم القومي.");
       }
     } catch (err: any) {
-      setErrorMessage("تعذر الاتصال بالخادم. يرجى التحقق من اتصالك بالإنترنت والمحاولة مجدداً.");
+      console.error(err);
+      setErrorMessage("فشل الاستعلام: " + (err.message || "تأكد من اتصالك بالإنترنت ومن إعدادات الـ Apps Script وحفظ النشر بالشيت."));
     } finally {
       setSearchLoading(false);
     }

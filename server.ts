@@ -6,16 +6,12 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { fileURLToPath } from "url";
 import { MOCK_STUDENTS } from "./src/data.ts";
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // API route logic
 app.get("/api/config", (req, res) => {
